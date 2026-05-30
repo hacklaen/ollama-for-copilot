@@ -22,6 +22,8 @@ Thanks to VS Code's native BYOM (Bring Your Own Model) support introduced in ver
 
 ### Install Ollama
 
+Installing Ollama only places the binary on your machine — it does **not** start the server. Without a running Ollama daemon, VS Code cannot reach any local model. This extension starts the daemon automatically when VS Code opens and shuts it down cleanly when VS Code closes, so you never have to think about it.
+
 **macOS**
 ```bash
 # Homebrew (recommended)
