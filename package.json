@@ -1,0 +1,138 @@
+{
+  "name": "ollama-lifecycle",
+  "displayName": "Ollama for Copilot",
+  "description": "Manages the local Ollama server lifecycle — starts on VS Code open, stops on close. Full BYOM integration with GitHub Copilot chat.",
+  "version": "0.1.1",
+  "publisher": "hacklaen",
+  "license": "MIT",
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#1e1e2e",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hacklaen/ollama-for-copilot"
+  },
+  "engines": {
+    "vscode": "^1.104.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "ollama",
+    "llm",
+    "copilot",
+    "chat",
+    "local",
+    "byom",
+    "ai",
+    "lifecycle"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "ollamaLifecycle.start",
+        "title": "Server starten",
+        "category": "Ollama"
+      },
+      {
+        "command": "ollamaLifecycle.stop",
+        "title": "Server stoppen",
+        "category": "Ollama"
+      },
+      {
+        "command": "ollamaLifecycle.restart",
+        "title": "Server neu starten",
+        "category": "Ollama"
+      },
+      {
+        "command": "ollamaLifecycle.toggleAutoStart",
+        "title": "Auto-Start umschalten",
+        "category": "Ollama"
+      },
+      {
+        "command": "ollamaLifecycle.showStatus",
+        "title": "Status anzeigen",
+        "category": "Ollama"
+      },
+      {
+        "command": "ollamaLifecycle.openProviderSetup",
+        "title": "Provider in VS Code einrichten",
+        "category": "Ollama"
+      },
+      {
+        "command": "ollamaLifecycle.showStatusBarMenu",
+        "title": "Statusbar-Menü",
+        "category": "Ollama"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "ollamaLifecycle.showStatusBarMenu",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Ollama Lifecycle",
+      "properties": {
+        "ollamaLifecycle.ollamaPath": {
+          "type": "string",
+          "default": "ollama",
+          "description": "Pfad zum ollama-Binary (Fallback wenn nicht im PATH)."
+        },
+        "ollamaLifecycle.port": {
+          "type": "number",
+          "default": 11434,
+          "description": "Port des Ollama-Servers."
+        },
+        "ollamaLifecycle.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Host für die Erreichbarkeitsprüfung."
+        },
+        "ollamaLifecycle.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ollama beim VS Code Start automatisch starten."
+        },
+        "ollamaLifecycle.stopOnExit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Selbst gestarteten Ollama-Server beim Beenden von VS Code stoppen."
+        },
+        "ollamaLifecycle.suppressSetupHint": {
+          "type": "boolean",
+          "default": false,
+          "description": "Hinweis zur Provider-Einrichtung unterdrücken."
+        },
+        "ollamaLifecycle.modelsDir": {
+          "type": "string",
+          "default": "",
+          "description": "Pfad zum Verzeichnis mit den Ollama-Modelldateien (setzt die Umgebungsvariable OLLAMA_MODELS beim Start). Leer lassen = Ollama-Standard (~/.ollama/models)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package --allow-missing-repository",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.104.0",
+    "@vscode/vsce": "^2.32.0",
+    "typescript": "^5.4.0"
+  }
+}

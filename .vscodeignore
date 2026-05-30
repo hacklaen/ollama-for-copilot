@@ -1,0 +1,9 @@
+.vscode/**
+src/**
+tsconfig.json
+**/*.map
+**/*.ts
+node_modules/**
+.gitignore
+make_icon.py
+.vscodeignore
