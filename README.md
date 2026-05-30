@@ -1,5 +1,7 @@
 # Ollama for Copilot
 
+![Version](https://img.shields.io/badge/version-1.0.0-7c6af5) ![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.104-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+
 **Ollama on demand – local, private, fully integrated into GitHub Copilot.**
 
 Ollama for Copilot is the first VS Code extension that runs Ollama *only when VS Code needs it*: the local AI server starts automatically when VS Code opens and shuts down cleanly when VS Code closes. No manual starting, no background resource consumption when you are not coding.
