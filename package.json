@@ -1,5 +1,5 @@
 {
-  "name": "ollama-lifecycle",
+  "name": "ollama-for-copilot",
   "displayName": "Ollama for Copilot",
   "description": "Manages the local Ollama server lifecycle — starts on VS Code open, stops on close. Full BYOM integration with GitHub Copilot chat.",
   "version": "0.1.1",
@@ -82,7 +82,7 @@
       ]
     },
     "configuration": {
-      "title": "Ollama Lifecycle",
+      "title": "Ollama for Copilot",
       "properties": {
         "ollamaLifecycle.ollamaPath": {
           "type": "string",

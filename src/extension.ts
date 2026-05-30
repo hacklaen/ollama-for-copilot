@@ -1,5 +1,5 @@
 /**
- * extension.ts — Ollama Lifecycle
+ * extension.ts — Ollama for Copilot
  *
  * This extension manages the lifecycle of a local Ollama server process so that
  * VS Code users do not have to start or stop it manually. Key design decisions:
@@ -46,7 +46,7 @@ type ServerState =
 
 // Module-level singletons — intentionally not class-based to keep the code flat
 // and easy to follow for contributors unfamiliar with VS Code extension patterns.
-let output: vscode.LogOutputChannel;    // Structured log visible under Output > Ollama Lifecycle
+let output: vscode.LogOutputChannel;    // Structured log visible under Output > Ollama for Copilot
 let statusBar: vscode.StatusBarItem;    // Item on the left side of the VS Code status bar
 let ownedProcess: ChildProcess | undefined; // The child process we spawned, if any
 let state: ServerState = { kind: 'unknown' };
@@ -227,7 +227,7 @@ function fetchTags(): Promise<string> {
  */
 function updateStatusBar() {
     let icon = '$(question)';
-    let tooltip = 'Ollama Lifecycle';
+    let tooltip = 'Ollama for Copilot';
     let warning = false;
     switch (state.kind) {
         case 'owned-running':
@@ -381,7 +381,7 @@ async function startServer(): Promise<void> {
                         `Ollama cannot be started: no execute permission on "${ollamaPath}".\n` +
                         'External volumes (ExFAT/FAT32) do not support the executable bit on macOS. ' +
                         'Copy the ollama binary to a local path (e.g. /usr/local/bin/ollama) ' +
-                        'and update the "Ollama Lifecycle: Ollama Path" setting.',
+                        'and update the "Ollama for Copilot: Ollama Path" setting.',
                         'Open Settings'
                     )
                     .then((sel) => {
@@ -400,7 +400,7 @@ async function startServer(): Promise<void> {
         });
 
         // Forward server stdout/stderr to the Output channel at debug level.
-        // The user can inspect them via View > Output > Ollama Lifecycle.
+        // The user can inspect them via View > Output > Ollama for Copilot.
         child.stdout?.on('data', (d) => output.debug(`[ollama] ${String(d).trimEnd()}`));
         child.stderr?.on('data', (d) => output.debug(`[ollama] ${String(d).trimEnd()}`));
 
@@ -701,7 +701,7 @@ async function showModels() {
  */
 export async function activate(context: vscode.ExtensionContext) {
     // LogOutputChannel (VS Code 1.74+) gives us log-level filtering for free.
-    output = vscode.window.createOutputChannel('Ollama Lifecycle', { log: true });
+    output = vscode.window.createOutputChannel('Ollama for Copilot', { log: true });
     context.subscriptions.push(output);
 
     // Alignment.Left keeps the icon in the "process info" area (left side),

@@ -1,8 +1,8 @@
-# Ollama Lifecycle
+# Ollama for Copilot
 
 **Ollama on demand – local, private, fully integrated into GitHub Copilot.**
 
-Ollama Lifecycle is the first VS Code extension that runs Ollama *only when VS Code needs it*: the local AI server starts automatically when VS Code opens and shuts down cleanly when VS Code closes. No manual starting, no background resource consumption when you are not coding.
+Ollama for Copilot is the first VS Code extension that runs Ollama *only when VS Code needs it*: the local AI server starts automatically when VS Code opens and shuts down cleanly when VS Code closes. No manual starting, no background resource consumption when you are not coding.
 
 Thanks to VS Code's native BYOM (Bring Your Own Model) support introduced in version 1.100+, your local models appear directly in the Copilot chat model picker — right alongside Claude, GPT-4o and Gemini, completely offline and without any API key.
 
