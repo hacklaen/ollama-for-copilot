@@ -1,6 +1,6 @@
 # Ollama for Copilot
 
-![Version](https://img.shields.io/badge/version-1.0.0-7c6af5) ![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.104-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-1.1.0-7c6af5) ![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.104-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 
 **Ollama on demand – local, private, fully integrated into GitHub Copilot.**
 
@@ -135,6 +135,46 @@ The icon on the left side of the status bar shows the current state:
 | `⚠ Ollama` | Error — hover for details |
 
 Clicking the icon opens a quick-pick menu with Start, Stop, Restart, Status and Provider Setup.
+
+---
+
+---
+
+## Troubleshooting
+
+### Status bar shows `⚠ Ollama` immediately after VS Code opens
+
+Click the status bar item and select **Show Logs** (or open *View → Output → Ollama for Copilot*) to see the exact error. Common causes:
+
+#### macOS: `operation not permitted` on external volume
+
+macOS TCC (Transparency, Consent and Control) controls which apps can read files on external drives. The grant is **silently revoked** by macOS when VS Code is updated, reinstalled, or moved — even if it worked before.
+
+Fix:
+1. Open **System Preferences → Privacy & Security → Full Disk Access**
+2. Add **Visual Studio Code** (`/Applications/Visual Studio Code.app`) and enable the toggle
+3. Quit VS Code completely (`Cmd+Q`) and reopen it
+
+The extension detects this condition automatically and shows a notification with an **Open Privacy Settings** button that takes you directly to the right pane.
+
+#### Port already in use
+
+Ollama may be running as a system daemon (installed via the [ollama.com](https://ollama.com) app) or started in a terminal. The extension detects a running instance and marks it as `external-running` (`⊡ Ollama`) — this is expected and means everything is working.
+
+If the port is held by a **different** process (not Ollama), the extension shows an error notification. Either stop that process or change the port:
+
+```jsonc
+// settings.json
+{ "ollamaLifecycle.port": 11435 }
+```
+
+#### Multiple VS Code windows open simultaneously
+
+Each VS Code window runs its own extension host. The first window to finish the readiness probe claims the Ollama process; all other windows detect it as `external-running`. No manual configuration needed.
+
+#### `OLLAMA_MODELS` path does not exist
+
+If `ollamaLifecycle.modelsDir` points to a path that does not exist (e.g. an external drive that is not connected), the extension checks this **before** spawning Ollama and shows an actionable error. Connect the drive or clear the setting to use the default path (`~/.ollama/models`).
 
 ---
 

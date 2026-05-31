@@ -27,6 +27,8 @@
 import * as vscode from 'vscode';
 import { ChildProcess, spawn } from 'child_process';
 import * as http from 'http';
+import * as net from 'net';
+import * as fs from 'fs';
 
 /**
  * All possible states of the managed Ollama server.
@@ -195,8 +197,7 @@ function probeVersion(timeoutMs = 250): Promise<{ ok: boolean; body?: string; er
  * Fetches the full /api/tags response (JSON list of installed models).
  * Used only for the "Show models" status bar menu action — not on the hot path.
  */
-function fetchTags(): Promise<string> {
-    const { host, port } = cfg();
+function fetchTags(): Promise<string> {    const { host, port } = cfg();
     return new Promise((resolve, reject) => {
         const req = http.get(
             { host, port, path: '/api/tags', timeout: 2000 },
@@ -211,6 +212,40 @@ function fetchTags(): Promise<string> {
             reject(new Error('timeout'));
         });
         req.on('error', reject);
+    });
+}
+
+/**
+ * Checks whether the configured TCP port is currently bound by *any* process
+ * (not necessarily Ollama). Used in two situations:
+ *
+ *  1. Pre-flight check in startServer(): if the port is in use before we even
+ *     spawn, the child would exit immediately with "address already in use".
+ *     We detect this upfront and skip the spawn entirely.
+ *
+ *  2. Post-exit diagnosis: if ollama exits quickly and its stderr is ambiguous,
+ *     a positive isPortInUse() confirms a port conflict as the root cause.
+ *
+ * The method works by attempting to create a TCP server and bind it to the
+ * same host:port. If that fails with EADDRINUSE, something else holds the
+ * port. We close the temporary server immediately on success so no real port
+ * is occupied.
+ *
+ * NOTE: There is an inherent race between this check and the spawn — another
+ * process could grab the port in the milliseconds between our check and spawn.
+ * That race is handled in the early-exit recovery path (see startServer).
+ */
+function isPortInUse(): Promise<boolean> {
+    const { host, port } = cfg();
+    return new Promise((resolve) => {
+        const tester = net.createServer();
+        tester.once('error', (err: NodeJS.ErrnoException) => {
+            resolve(err.code === 'EADDRINUSE');
+        });
+        tester.once('listening', () => {
+            tester.close(() => resolve(false));
+        });
+        tester.listen(port, host);
     });
 }
 
@@ -288,14 +323,128 @@ function setState(next: ServerState) {
  * @param intervalMs Pause between probes (default 250 ms).
  * @returns true if the server became reachable within the budget.
  */
-async function waitUntilReady(maxMs = 10_000, intervalMs = 250): Promise<boolean> {
+async function waitUntilReady(
+    maxMs = 10_000,
+    intervalMs = 250,
+    shouldAbort?: () => boolean,
+): Promise<boolean> {
     const start = Date.now();
     while (Date.now() - start < maxMs) {
+        if (shouldAbort?.()) return false;
         const r = await probeVersion();
         if (r.ok) return true;
         await new Promise((res) => setTimeout(res, intervalMs));
     }
     return false;
+}
+
+/**
+ * Returns the first non-empty line of a multi-line string (trimmed).
+ * Used to extract the key failure reason from Ollama's multi-line stderr so
+ * that the notification toast stays concise. The full stderr is always written
+ * to the Output channel via output.error() before this is called.
+ */
+function firstLine(s: string): string {
+    for (const line of s.split(/\r?\n/)) {
+        const t = line.trim();
+        if (t) return t;
+    }
+    return s.trim();
+}
+
+/**
+ * Shows a macOS-specific notification explaining how to grant Full Disk
+ * Access to VS Code in System Preferences, and opens the relevant pane
+ * directly when the user clicks the action button.
+ *
+ * BACKGROUND — macOS Transparency, Consent and Control (TCC):
+ * Since macOS Catalina (10.15), every app that reads files outside of its
+ * sandbox must hold an explicit TCC grant for the relevant category:
+ *  - "Removable Volumes"  — USB sticks, external SSDs mounted via Finder
+ *  - "Full Disk Access"   — supersedes all other storage grants
+ *
+ * VS Code holds this grant after the user approves it once, but macOS
+ * silently REVOKES the grant when:
+ *  - VS Code is updated (new binary, new code signature)
+ *  - VS Code is moved to a different path (e.g. reinstalled)
+ *  - The user reinstalls or re-downloads the VSIX
+ *  - A major macOS update changes TCC policy
+ *
+ * This function is a no-op on non-macOS platforms (Windows / Linux have no
+ * equivalent TCC mechanism and produce plain EACCES errors instead).
+ *
+ * @param pathHint  Human-readable path to include in the notification text
+ *                  so the user knows which directory triggered the error.
+ */
+function showMacTccHint(pathHint: string) {
+    if (process.platform !== 'darwin') return;
+    const msg =
+        `macOS denied access to "${pathHint}". This is a TCC permission issue — ` +
+        `VS Code needs Full Disk Access (or Removable Volumes access) to read ` +
+        `files on external drives. macOS sometimes revokes this after an update.`;
+    output.error(msg);
+    vscode.window
+        .showErrorMessage(
+            msg,
+            'Open Privacy Settings',
+            'Show Logs'
+        )
+        .then((sel) => {
+            if (sel === 'Open Privacy Settings') {
+                vscode.env.openExternal(
+                    vscode.Uri.parse(
+                        'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles'
+                    )
+                );
+            } else if (sel === 'Show Logs') {
+                output.show(true);
+            }
+        });
+}
+
+/**
+ * Synchronously checks whether the configured modelsDir path is readable by
+ * the current process. Returns a human-readable problem string on failure, or
+ * undefined if the path is accessible.
+ *
+ * WHY SYNC:
+ * This runs in startServer() which is already async and awaited by the caller.
+ * Using accessSync avoids creating an additional promise chain while keeping
+ * the code easy to reason about. The call completes in microseconds for any
+ * local or remote filesystem that is currently accessible.
+ *
+ * WHY R_OK | X_OK:
+ * Ollama's first action on startup is to enumerate the blobs sub-directory.
+ * R_OK (read) allows open(), X_OK (execute/search) allows readdir() on a
+ * directory. W_OK is intentionally omitted — write access is only required
+ * when pulling new models, not on startup; deferring that error keeps the
+ * check focused on boot-time failures.
+ *
+ * RETURN VALUES:
+ *  - undefined          → path is accessible, proceed with spawn
+ *  - 'EPERM'            → sentinel: caller must call showMacTccHint()
+ *  - any other string   → human-readable error message for the notification
+ */
+function checkModelsDirAccess(modelsDir: string): string | undefined {
+    if (!modelsDir) return undefined;
+    try {
+        // R_OK is enough for the readdir Ollama does on startup; lack of W_OK
+        // would only fail later when pulling a model, which is fine to defer.
+        fs.accessSync(modelsDir, fs.constants.R_OK | fs.constants.X_OK);
+        return undefined;
+    } catch (e) {
+        const err = e as NodeJS.ErrnoException;
+        if (err.code === 'ENOENT') {
+            return `OLLAMA_MODELS path does not exist: ${modelsDir}`;
+        }
+        if (err.code === 'EACCES' || err.code === 'EPERM') {
+            // Return a sentinel instead of a full message: the caller knows
+            // to invoke showMacTccHint() which produces a platform-aware,
+            // actionable notification with a direct link to System Preferences.
+            return `EPERM`;
+        }
+        return `Cannot access OLLAMA_MODELS (${err.code ?? 'unknown'}): ${modelsDir}`;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -322,17 +471,100 @@ async function startServer(): Promise<void> {
         return;
     }
 
-    // Check whether an external instance is already running (e.g. started by
-    // the user in a terminal or by another tool).
-    const probe = await probeVersion();
-    if (probe.ok) {
-        setState({ kind: 'external-running' });
+    // ── Pre-flight 1: detect already-running Ollama ──────────────────────
+    //
+    // Common scenarios where Ollama is already up before we try to spawn:
+    //  a) The ollama.com installer registers a LaunchAgent (macOS) or a
+    //     Windows Service that starts automatically at login.
+    //  b) The user ran `ollama serve` in a terminal before opening VS Code.
+    //  c) Another VS Code window has its own extension host that started
+    //     Ollama moments earlier (both windows activate on startup).
+    //
+    // We probe three times with a 1 s HTTP timeout and 200 ms gaps to
+    // tolerate a daemon that is still in the middle of its own startup
+    // (e.g. scenario a after a fresh login).
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const probe = await probeVersion(1000);
+        if (probe.ok) {
+            output.info('Detected an already running Ollama server — not starting our own.');
+            setState({ kind: 'external-running' });
+            return;
+        }
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 200));
+    }
+
+    // ── Pre-flight 2: detect port occupied by a non-Ollama process ────────
+    //
+    // If /api/version did not respond but the TCP port is still bound, a
+    // different process (e.g. a web server, a second VS Code window that is
+    // still in the middle of spawning, or a leftover zombie process) holds
+    // the port. Spawning in this case is pointless — ollama would exit with
+    // "address already in use" (code 1) within milliseconds. We detect this
+    // upfront and show a targeted, actionable message instead.
+    if (await isPortInUse()) {
+        const { host, port } = cfg();
+        const msg =
+            `Port ${host}:${port} is already in use by another process, ` +
+            `but it does not respond to /api/version. ` +
+            `Change "Ollama for Copilot: Port" or stop the conflicting process.`;
+        output.error(msg);
+        vscode.window
+            .showErrorMessage(msg, 'Open Settings')
+            .then((sel) => {
+                if (sel === 'Open Settings') {
+                    vscode.commands.executeCommand(
+                        'workbench.action.openSettings',
+                        'ollamaLifecycle.port'
+                    );
+                }
+            });
+        setState({ kind: 'error', message: `Port ${port} in use` });
         return;
     }
 
     busy = true;
     setState({ kind: 'starting' });
     const { ollamaPath, modelsDir } = cfg();
+
+    // ── Pre-flight 3: verify modelsDir is readable ───────────────────────
+    //
+    // When ollamaLifecycle.modelsDir is set, the path is passed as
+    // OLLAMA_MODELS to the child process. Ollama's very first action is to
+    // open that directory; if it cannot, it exits with code 1 and a single
+    // stderr line — but only AFTER we have already waited up to 250 ms per
+    // poll cycle × N iterations. By checking accessibility beforehand we:
+    //  - avoid the 10 s wait-until-ready timeout
+    //  - distinguish the root cause (missing dir vs. TCC permission vs.
+    //    genuine port conflict) and show the correct recovery action
+    //
+    // The most common trigger on macOS: the user previously granted VS Code
+    // Full Disk Access, then VS Code was updated or reinstalled and macOS
+    // silently revoked the TCC grant.
+    if (modelsDir) {
+        const problem = checkModelsDirAccess(modelsDir);
+        if (problem === 'EPERM') {
+            showMacTccHint(modelsDir);
+            setState({ kind: 'error', message: `No permission to read ${modelsDir}` });
+            busy = false;
+            return;
+        }
+        if (problem) {
+            output.error(problem);
+            vscode.window
+                .showErrorMessage(problem, 'Open Settings')
+                .then((sel) => {
+                    if (sel === 'Open Settings') {
+                        vscode.commands.executeCommand(
+                            'workbench.action.openSettings',
+                            'ollamaLifecycle.modelsDir'
+                        );
+                    }
+                });
+            setState({ kind: 'error', message: problem });
+            busy = false;
+            return;
+        }
+    }
 
     // Build the environment for the child process. We inherit the parent
     // environment and optionally override OLLAMA_MODELS so the user can keep
@@ -345,6 +577,10 @@ async function startServer(): Promise<void> {
 
     try {
         let spawnFailed = false;
+        // Buffer recent stderr so we can surface it to the user if the process
+        // exits with a non-zero code (e.g. port in use, bad OLLAMA_MODELS path).
+        let stderrBuffer = '';
+        let earlyExit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
 
         const child = spawn(ollamaPath, ['serve'], {
             stdio: ['ignore', 'pipe', 'pipe'], // stdin closed; stdout/stderr piped for logging
@@ -352,8 +588,11 @@ async function startServer(): Promise<void> {
             env: spawnEnv,
         });
 
+        // ── Spawn-level errors ────────────────────────────────────────────
         // The 'error' event fires synchronously before any 'exit' event when
         // spawn itself fails (binary not found, permission denied, etc.).
+        // These are OS-level errors, distinct from Ollama reporting an error
+        // at runtime (which surfaces via exit code + stderr instead).
         child.on('error', (err: NodeJS.ErrnoException) => {
             spawnFailed = true;
             ownedProcess = undefined;
@@ -399,30 +638,145 @@ async function startServer(): Promise<void> {
             }
         });
 
-        // Forward server stdout/stderr to the Output channel at debug level.
-        // The user can inspect them via View > Output > Ollama for Copilot.
+        // ── Stdout / stderr forwarding ────────────────────────────────────
+        // Both streams are forwarded to the Output channel at DEBUG level.
+        // DEBUG is hidden by default in the LogOutputChannel view, so the
+        // normal running noise (model loads, request logs) stays out of the
+        // user's way. If something goes wrong we promote the buffered stderr
+        // to ERROR level in the exit handler below.
         child.stdout?.on('data', (d) => output.debug(`[ollama] ${String(d).trimEnd()}`));
-        child.stderr?.on('data', (d) => output.debug(`[ollama] ${String(d).trimEnd()}`));
+        child.stderr?.on('data', (d) => {
+            const text = String(d);
+            // Ring-buffer: keep the last ~4 KB of stderr. Ollama can be
+            // verbose (GPU detection, model loading), but the fatal message
+            // that explains an unexpected exit always appears last. 4 KB is
+            // enough for dozens of lines while keeping memory use negligible.
+            stderrBuffer = (stderrBuffer + text).slice(-4096);
+            output.debug(`[ollama] ${text.trimEnd()}`);
+        });
 
-        // Watch for unexpected exits (e.g. port already in use → ollama exits ~immediately).
+        // ── Exit handler ──────────────────────────────────────────────────
+        // Covers two distinct cases:
+        //
+        //  A) Deliberate stop (state.kind === 'stopping'):
+        //     Triggered by the user or deactivate(). We do NOT set earlyExit
+        //     here; stopServer() handles the state transition itself.
+        //
+        //  B) Unexpected exit (anything else):
+        //     Ollama died while we thought it should be running. We capture
+        //     the exit details in `earlyExit` so that the post-spawn logic
+        //     below can perform recovery (re-probe, diagnose root cause,
+        //     surface the right notification) instead of misidentifying a
+        //     race-condition as a hard failure.
         child.on('exit', (code, signal) => {
             output.info(`Ollama process exited (code=${code}, signal=${signal})`);
             if (ownedProcess === child) {
                 ownedProcess = undefined;
                 // Don't overwrite a deliberate 'stopping' transition.
                 if (state.kind !== 'stopping') {
-                    setState({ kind: 'stopped' });
+                    earlyExit = { code, signal };
+                    // Promote stderr to ERROR level now that we know something
+                    // went wrong. ERROR entries are always visible in the
+                    // Output channel regardless of the log-level filter.
+                    const tail = stderrBuffer.trim();
+                    if (tail) {
+                        output.error(`Ollama stderr:\n${tail}`);
+                    }
+                    if (code !== 0) {
+                        setState({
+                            kind: 'error',
+                            message: `Ollama exited with code ${code}${tail ? `: ${firstLine(tail)}` : ''}`,
+                        });
+                    } else {
+                        // Clean exit (code 0) is unusual but possible, e.g.
+                        // if the user ran `ollama stop` from outside VS Code.
+                        setState({ kind: 'stopped' });
+                    }
                 }
             }
         });
 
         ownedProcess = child;
 
-        // Poll until the server's HTTP endpoint responds or we time out.
-        const ready = await waitUntilReady();
+        // ── Readiness poll ────────────────────────────────────────────────
+        // Poll /api/version until the server responds with 200, exits
+        // unexpectedly (shouldAbort fires), or we exhaust the 10 s budget.
+        // Aborting immediately on early exit avoids burning the full 10 s
+        // before showing the user an error notification.
+        const ready = await waitUntilReady(10_000, 250, () => earlyExit !== undefined);
 
         if (spawnFailed) {
-            // Error state was already set inside the 'error' handler above.
+            // The 'error' event handler already set the error state, logged
+            // the cause, and showed the appropriate notification. Nothing to do.
+        } else if (earlyExit) {
+            // The 'exit' handler set the error state and wrote stderr to the
+            // Output channel. Now we need to decide which notification to show.
+            const tail = stderrBuffer.trim();
+
+            // ── Race-condition recovery ───────────────────────────────────
+            // Window of vulnerability: our pre-flight probes ran clean, then
+            // between probe and spawn another process grabbed the port (most
+            // likely: a second VS Code window's extension host running in
+            // parallel). Ollama then exited immediately with a port-conflict
+            // error. We re-probe once with a longer timeout; if the port now
+            // serves /api/version, we adopt that instance as external-running
+            // instead of surfacing a spurious error to the user.
+            const recheck = await probeVersion(1500);
+            if (recheck.ok) {
+                output.info('Ollama is reachable after exit — treating as external instance.');
+                setState({ kind: 'external-running' });
+                return;
+            }
+
+            // Detect Ollama's own permission errors (TCC denying access to an
+            // external volume even though our pre-flight passed, e.g. because
+            // a subdirectory of modelsDir is restricted).
+            if (/operation not permitted|permission denied/i.test(tail)) {
+                showMacTccHint(modelsDir || '(default models path)');
+            } else if (
+                /address already in use|bind: address|listen tcp/i.test(tail) ||
+                (await isPortInUse())
+            ) {
+                const { port } = cfg();
+                vscode.window
+                    .showErrorMessage(
+                        `Ollama failed to start: port ${port} is already in use ` +
+                        `(another Ollama instance, daemon, or VS Code window). ` +
+                        `Stop the other process or change the port in settings.`,
+                        'Open Settings',
+                        'Show Logs'
+                    )
+                    .then((sel) => {
+                        if (sel === 'Open Settings') {
+                            vscode.commands.executeCommand(
+                                'workbench.action.openSettings',
+                                'ollamaLifecycle.port'
+                            );
+                        } else if (sel === 'Show Logs') {
+                            output.show(true);
+                        }
+                    });
+            } else {
+                const hint = tail
+                    ? firstLine(tail)
+                    : `Exit code ${earlyExit.code}.`;
+                vscode.window
+                    .showErrorMessage(
+                        `Ollama failed to start: ${hint}`,
+                        'Show Logs',
+                        'Open Settings'
+                    )
+                    .then((sel) => {
+                        if (sel === 'Show Logs') {
+                            output.show(true);
+                        } else if (sel === 'Open Settings') {
+                            vscode.commands.executeCommand(
+                                'workbench.action.openSettings',
+                                'ollamaLifecycle'
+                            );
+                        }
+                    });
+            }
         } else if (!ready) {
             // waitUntilReady returned false but the process may still be alive
             // and just very slow. Do one final probe with a longer timeout.
